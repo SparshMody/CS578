@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Trash Bin Dashboard</title>
+<style>
+  :root { --bg:#f4f7f8; --card:#fff; --ink:#14213d; --muted:#6b7785; --line:#dde3e8;
+          --l25:#2a9d8f; --l50:#8ab17d; --l75:#e9a23b; --full:#d64545; --stale:#7a7a7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:20px 28px; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
+  h1 { margin:0; font-size:22px; }
+  .sub { color:var(--muted); font-size:14px; }
+  main { padding:0 28px 28px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  .card.stale { opacity:.75; border-color:var(--stale); }
+  .top { display:flex; justify-content:space-between; align-items:center; }
+  .name { font-weight:600; font-size:17px; }
+  .loc { color:var(--muted); font-size:13px; }
+  .badge { font-weight:700; padding:6px 12px; border-radius:999px; color:#fff; font-size:15px; }
+  .tank { margin:16px 0 10px; height:150px; width:90px; border:3px solid var(--ink); border-top:none; border-radius:0 0 10px 10px;
+          position:relative; overflow:hidden; background:#fafbfc; }
+  .fill { position:absolute; bottom:0; left:0; right:0; transition:height .6s ease, background .6s; }
+  .tick { position:absolute; left:0; right:0; border-top:1px dashed #c3ccd4; font-size:10px; color:var(--muted); padding-left:3px; z-index:1; }
+  .row { display:flex; gap:18px; align-items:flex-end; }
+  .stats { font-size:13px; line-height:1.8; color:var(--muted); }
+  .stats b { color:var(--ink); font-weight:600; }
+  .warn { margin-top:8px; padding:8px 10px; border-radius:8px; background:#fdecec; color:#9b1c1c; font-size:13px; font-weight:600; }
+  canvas { width:100%; height:70px; display:block; margin-top:8px; }
+  .empty { color:var(--muted); padding:40px; text-align:center; background:var(--card); border:1px dashed var(--line); border-radius:12px; }
+  details { margin-top:24px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 18px; }
+  summary { cursor:pointer; font-weight:600; }
+  form { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; margin-top:12px; align-items:end; }
+  label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+  input, select, button { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; }
+  button { background:var(--ink); color:#fff; border:none; cursor:pointer; }
+  #msg { font-size:13px; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>🗑️ Smart Trash Bin – Fill Levels</h1>
+  <div class="sub">CS 578 Group 15 · ultrasonic sensor → ESP32 → Wi-Fi → this dashboard</div></div>
+  <div class="sub" id="clock">connecting…</div>
+</header>
+<main>
+  <div id="bins" class="grid"></div>
+
+  <details>
+    <summary>Test mode – record a sample (ground truth vs. reported)</summary>
+    <form id="testForm">
+      <label>Bin <select id="t_bin"></select></label>
+      <label>Trial #<input id="t_trial" type="number" value="1" min="1"></label>
+      <label>Trash arrangement
+        <select id="t_arr">
+          <option>flat</option><option>piled-center</option><option>piled-side</option>
+          <option>bulky-items</option><option>bag-crumpled</option><option>soft-fabric</option>
+        </select></label>
+      <label>True level
+        <select id="t_level"><option>25%</option><option>50%</option><option>75%</option><option>Full</option></select></label>
+      <label>True fill % (measured)<input id="t_pct" type="number" step="1" placeholder="e.g. 48"></label>
+      <label>Notes<input id="t_notes" placeholder="optional"></label>
+      <button type="submit">Record sample</button>
+    </form>
+    <div id="msg"></div>
+  </details>
+</main>
+
+<script>
+const COLORS = {"25%":"var(--l25)","50%":"var(--l50)","75%":"var(--l75)","Full":"var(--full)"};
+const RAW = {"25%":"#2a9d8f","50%":"#8ab17d","75%":"#e9a23b","Full":"#d64545"};
+let staleAfter = 20;
+
+function fmtAge(s){ if(s<60) return Math.round(s)+" s ago"; if(s<3600) return Math.round(s/60)+" min ago"; return (s/3600).toFixed(1)+" h ago"; }
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function card(b){
+  const color = b.stale ? "var(--stale)" : (COLORS[b.level] || "var(--stale)");
+  const pct = Math.max(0, Math.min(100, Number(b.fill_pct)||0));
+  const ticks = [25,50,75].map(t=>`<div class="tick" style="bottom:${t}%">${t}</div>`).join("");
+  const sig = b.rssi>-60?"strong":b.rssi>-75?"ok":"weak";
+  return `<div class="card ${b.stale?'stale':''}">
+    <div class="top"><div><div class="name">${esc(b.bin_id)}</div><div class="loc">${esc(b.location)}</div></div>
+      <div class="badge" style="background:${color}">${b.stale?'STALE':esc(b.level)}</div></div>
+    <div class="row">
+      <div class="tank">${ticks}<div class="fill" style="height:${pct}%;background:${color}"></div></div>
+      <div class="stats">
+        Estimated fill: <b>${pct.toFixed(0)}%</b><br>
+        Distance: <b>${Number(b.distance_cm).toFixed(1)} cm</b><br>
+        Last update: <b>${fmtAge(b.age_s)}</b><br>
+        <span title="${esc(b.last_update_iso)}">${esc(b.last_update_iso)}</span><br>
+        Wi-Fi: <b>${b.rssi} dBm</b> (${sig})<br>
+        Valid pings: <b>${Math.round((b.valid_ratio||0)*100)}%</b> · Missed pkts: <b>${b.missed_packets}</b>
+      </div>
+    </div>
+    ${b.stale?`<div class="warn">⚠ No data for ${fmtAge(b.age_s).replace(' ago','')} – shown level may be out of date (threshold ${staleAfter}s)</div>`:''}
+    ${!b.stale && b.level==='Full'?`<div class="warn">Needs emptying</div>`:''}
+    <canvas id="c_${esc(b.bin_id)}" width="600" height="140"></canvas>
+  </div>`;
+}
+
+async function drawHistory(id){
+  const r = await fetch(`/api/history?bin_id=${encodeURIComponent(id)}&n=120`); const h = await r.json();
+  const cv = document.getElementById("c_"+id); if(!cv) return;
+  const g = cv.getContext("2d"), W=cv.width, H=cv.height; g.clearRect(0,0,W,H);
+  g.strokeStyle="#dde3e8"; g.lineWidth=1;
+  [25,50,75].forEach(t=>{ const y=H-(t/100)*H; g.beginPath(); g.moveTo(0,y); g.lineTo(W,y); g.stroke(); });
+  const p = h.points; if(p.length<2) return;
+  g.strokeStyle="#14213d"; g.lineWidth=3; g.beginPath();
+  p.forEach((pt,i)=>{ const x=i/(p.length-1)*W, y=H-(Math.max(0,Math.min(100,pt.fill_pct))/100)*(H-6)-3; i?g.lineTo(x,y):g.moveTo(x,y); });
+  g.stroke();
+}
+
+async function refresh(){
+  try{
+    const r = await fetch("/api/bins"); const d = await r.json(); staleAfter = d.stale_after_s;
+    const el = document.getElementById("bins");
+    el.innerHTML = d.bins.length ? d.bins.map(card).join("") :
+      `<div class="empty">Waiting for the first update from an ESP32…<br><small>Check SERVER_URL in the firmware points at this laptop's IP.</small></div>`;
+    d.bins.forEach(b=>drawHistory(b.bin_id));
+    const sel = document.getElementById("t_bin"), cur = sel.value;
+    sel.innerHTML = d.bins.map(b=>`<option ${b.bin_id===cur?'selected':''}>${esc(b.bin_id)}</option>`).join("");
+    document.getElementById("clock").textContent = "Updated " + new Date().toLocaleTimeString() + " · " + d.bins.length + " bin(s)";
+  }catch(e){ document.getElementById("clock").textContent = "⚠ dashboard server unreachable"; }
+}
+
+document.getElementById("testForm").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const body = { bin_id: t_bin.value, trial: Number(t_trial.value), arrangement: t_arr.value,
+                 true_level: t_level.value, true_fill_pct: t_pct.value, notes: t_notes.value };
+  const r = await fetch("/api/test_sample",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d = await r.json(); const m = document.getElementById("msg");
+  if(r.ok){ const ok = d.recorded.reported_level===body.true_level;
+    m.innerHTML = `${ok?'✅':'❌'} Trial ${body.trial}: true <b>${body.true_level}</b>, reported <b>${d.recorded.reported_level}</b> (${Number(d.recorded.reported_fill_pct).toFixed(0)}%) – saved to testing/results.csv`;
+    t_trial.value = Number(t_trial.value)+1;
+  } else m.textContent = "Not recorded: " + d.error;
+});
+
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
