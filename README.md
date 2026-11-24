@@ -1,6 +1,8 @@
 # Smart Trash Bin – Fill-Level Monitoring System
 **CS 578 Wireless Networks · Group 15** – Hongzhen Xu, Sparsh Mody, Chinmay Patel
 
+> 👉 **New to this? Open [START_HERE.md](START_HERE.md)**. It's a step-by-step setup guide for our exact parts (ESP32 + US-100 + Dupont wires). With the **US-100 at 3.3 V** you don't need the voltage divider described below.
+
 An ultrasonic sensor on the lid measures the distance to the trash surface. An ESP32 filters that, estimates the fill level, classifies it as **25% / 50% / 75% / Full**, and sends it over **Wi-Fi** to a **web dashboard on a laptop**. The dashboard shows the last update time and flags **stale** data.
 
 ```
